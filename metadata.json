@@ -1,0 +1,6 @@
+{
+  "name": "Component Vault",
+  "description": "Personal local-first resource management app for developers and designers to save, organize, preview, search, and quickly retrieve UI components, snippets, prompts, videos, and inspiration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
