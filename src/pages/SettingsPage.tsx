@@ -16,16 +16,23 @@ import {
   CloudDownload,
   Code,
   Copy,
-  ExternalLink,
   ShieldCheck,
   Zap,
   RefreshCw,
   Key,
   Link,
   PlusCircle,
+  Loader2,
 } from 'lucide-react';
 import { storageService } from '../services/storageService';
-import { isSupabaseConfigured, getSupabaseCredentials, setCustomSupabaseCredentials } from '../lib/supabase';
+import {
+  isSupabaseConfigured,
+  getSupabaseCredentials,
+  setCustomSupabaseCredentials,
+  clearCustomSupabaseCredentials,
+  testSupabaseConnection,
+  type ConnectionTestResult,
+} from '../lib/supabase';
 import { useToast } from '../components/common/Toast';
 
 interface SettingsPageProps {
@@ -131,6 +138,8 @@ export function SettingsPage({
   });
 
   const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [exportProgress, setExportProgress] = useState<string | null>(null);
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
@@ -150,7 +159,27 @@ export function SettingsPage({
 
   useEffect(() => {
     fetchStats();
+    if (isSupabaseConfigured()) {
+      handleTestConnection();
+    }
   }, []);
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    try {
+      const res = await testSupabaseConnection();
+      setTestResult(res);
+      if (res.ok) {
+        toast.success(res.message);
+      } else {
+        toast.warning(res.message);
+      }
+    } catch (e) {
+      toast.error('Connection test failed: ' + String(e));
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleSaveCredentials = async () => {
     try {
@@ -164,13 +193,30 @@ export function SettingsPage({
       }
 
       setCustomSupabaseCredentials(inputUrl.trim(), inputKey.trim());
-      toast.success('Supabase credentials saved! Pushing current local data to Supabase...');
+      toast.success('Supabase credentials saved! Testing connection...');
 
-      // Auto push current data
-      await handleSyncToSupabase();
+      setTesting(true);
+      const res = await testSupabaseConnection();
+      setTestResult(res);
+      setTesting(false);
+
+      if (res.ok) {
+        toast.success('Connection verified! Pulling Supabase data into local vault...');
+        await handleSyncFromSupabase(true);
+      } else {
+        toast.error(res.message);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save credentials.');
     }
+  };
+
+  const handleDisconnect = () => {
+    clearCustomSupabaseCredentials();
+    setInputUrl('');
+    setInputKey('');
+    setTestResult(null);
+    toast.info('Supabase credentials removed from this device.');
   };
 
   const handleCopySql = () => {
@@ -185,12 +231,17 @@ export function SettingsPage({
       setLoading(true);
       setExportProgress('Pushing data to Supabase...');
       const res = await storageService.syncToSupabase();
-      toast.success(`Successfully pushed ${res.resourcesCount} resources, ${res.categoriesCount} categories, ${res.tagsCount} tags, and ${res.collectionsCount} collections to Supabase!`);
+      toast.success(
+        `Successfully pushed ${res.resourcesCount} resources, ${res.categoriesCount} categories, ${res.tagsCount} tags, and ${res.collectionsCount} collections to Supabase!`
+      );
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Failed to sync to Supabase';
       toast.error(errMsg);
-      // Auto open SQL modal if table missing
-      if (errMsg.toLowerCase().includes('does not exist') || errMsg.toLowerCase().includes('42p01') || errMsg.toLowerCase().includes('rls')) {
+      if (
+        errMsg.toLowerCase().includes('does not exist') ||
+        errMsg.toLowerCase().includes('42p01') ||
+        errMsg.toLowerCase().includes('rls')
+      ) {
         setShowSqlModal(true);
       }
     } finally {
@@ -223,10 +274,14 @@ export function SettingsPage({
   const handleSyncFromSupabase = async (force = false) => {
     try {
       setLoading(true);
-      setExportProgress(force ? 'Force downloading full database from Supabase...' : 'Pulling delta sync from Supabase...');
+      setExportProgress(
+        force
+          ? 'Downloading full database from Supabase...'
+          : 'Pulling delta sync from Supabase...'
+      );
       const res = await storageService.syncFromSupabase({ force });
       if (res.isDelta) {
-        toast.success(`Delta sync complete! ${res.resourcesCount} modified items updated.`);
+        toast.success(`Delta sync complete! ${res.resourcesCount} items up to date.`);
       } else {
         toast.success(`Full sync complete! Loaded ${res.resourcesCount} items from Supabase.`);
       }
@@ -270,7 +325,11 @@ export function SettingsPage({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!confirm('This will import resources, categories, tags, collections, and binary media into your vault. Continue?')) {
+    if (
+      !confirm(
+        'This will import resources, categories, tags, collections, and binary media into your vault. Continue?'
+      )
+    ) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -278,11 +337,8 @@ export function SettingsPage({
     setLoading(true);
     setExportProgress('Importing database...');
     try {
-      const result = await storageService.importDatabase(file, (progress) => {
-        setExportProgress(`Importing records... (${progress.completedRows} rows processed)`);
-      });
-
-      toast.success(`Successfully imported database vault (${result.count} items)!`);
+      await storageService.importDatabase(file);
+      toast.success('Successfully imported database vault!');
       await fetchStats();
       onRefreshData();
     } catch (err) {
@@ -306,8 +362,12 @@ export function SettingsPage({
   };
 
   const handleClearVault = async () => {
-    if (confirm('CRITICAL WARNING: Are you sure you want to delete ALL resources, categories, tags, and collections? This cannot be undone.')) {
-      await storageService.clearVault();
+    if (
+      confirm(
+        'CRITICAL WARNING: Are you sure you want to delete ALL resources, categories, tags, and collections? This cannot be undone.'
+      )
+    ) {
+      await storageService.clearAllData();
       toast.info('Vault cleared.');
       await fetchStats();
       onRefreshData();
@@ -319,10 +379,10 @@ export function SettingsPage({
       {/* Header */}
       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
         <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-          Settings & Local Storage
+          Settings & Cloud Storage
         </h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-          Manage your local database, backup JSON files, theme, and shortcuts.
+          Manage your local database, Supabase cloud sync, backup JSON files, theme, and shortcuts.
         </p>
       </div>
 
@@ -334,14 +394,14 @@ export function SettingsPage({
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-extrabold text-slate-900 dark:text-white">
-              Local Browser Storage (IndexedDB)
+              Local Browser Vault (IndexedDB + Dexie)
             </h2>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-              Active
+              Active Cache
             </span>
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-            Your resources, screenshots, code snippets, and prompts are stored directly in this browser on your device using IndexedDB. No external servers required.
+            Your resources, screenshots, video embeds, code snippets, and AI notes are cached directly in your browser using IndexedDB. Syncs with Supabase when configured.
           </p>
         </div>
       </div>
@@ -371,7 +431,7 @@ export function SettingsPage({
           <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
             {stats.totalImages}
           </p>
-          <span className="text-[10px] text-slate-500">IndexedDB Blobs</span>
+          <span className="text-[10px] text-slate-500">Thumbnails Cached</span>
         </div>
 
         <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
@@ -379,11 +439,11 @@ export function SettingsPage({
           <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
             ~{stats.estimatedKB} KB
           </p>
-          <span className="text-[10px] text-slate-500">Data & Media payload</span>
+          <span className="text-[10px] text-slate-500">Data payload</span>
         </div>
       </div>
 
-      {/* Supabase Integration & Egress Optimization Panel */}
+      {/* Supabase Integration & Diagnostics Panel */}
       <div className="p-6 rounded-2xl border border-emerald-500/30 bg-white dark:bg-slate-900 shadow-sm space-y-5 relative overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
           <div className="flex items-center gap-3">
@@ -393,66 +453,93 @@ export function SettingsPage({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
-                  Supabase Backend Storage & Bandwidth Management
+                  Supabase Cloud Database Synchronization
                 </h2>
-                {isConfigured ? (
+                {testResult?.ok ? (
                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Connected & Active
+                    Connected & Verified
+                  </span>
+                ) : isConfigured ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    Configured (Click Test)
                   </span>
                 ) : (
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-500/20 text-slate-400 border border-slate-500/30">
                     Not Configured
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Cloud database sync with low-egress hybrid caching and compressed thumbnail streaming.
+                Pull existing cloud items or push local resources into your Supabase PostgreSQL instance.
               </p>
             </div>
           </div>
 
-          <button
-            onClick={() => setShowSqlModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all"
-          >
-            <Code className="w-3.5 h-3.5 text-emerald-400" />
-            <span>View SQL Schema</span>
-          </button>
-        </div>
+          <div className="flex items-center gap-2">
+            {isConfigured && (
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${testing ? 'animate-spin' : ''}`} />
+                <span>Test Connection</span>
+              </button>
+            )}
 
-        {/* Egress Optimization Capabilities Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-              <Zap className="w-3.5 h-3.5 shrink-0" />
-              <span>Hybrid Stale-While-Revalidate</span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-snug">
-              Reads instantaneously from local IndexedDB cache, making repeat queries cost <strong>0 Supabase egress</strong>.
-            </p>
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-              <span>85% Egress Image Downscaling</span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-snug">
-              Canvas downscaling compresses uploaded images into small WebP/JPEG thumbnails before cloud transfer.
-            </p>
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-              <CloudUpload className="w-3.5 h-3.5 shrink-0" />
-              <span>Surgical Row Delta Patching</span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-snug">
-              Actions like toggling favorites patch only single columns rather than re-transmitting entire objects.
-            </p>
+            <button
+              onClick={() => setShowSqlModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+            >
+              <Code className="w-3.5 h-3.5 text-emerald-400" />
+              <span>View SQL Schema</span>
+            </button>
           </div>
         </div>
+
+        {/* Diagnostic Table Status */}
+        {testResult && (
+          <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Database Tables Status:
+            </span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+              {Object.entries(testResult.tables).map(([tableName, exists]) => (
+                <div
+                  key={tableName}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border ${
+                    exists
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : 'border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                  }`}
+                >
+                  {exists ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>{tableName}</span>
+                </div>
+              ))}
+            </div>
+
+            {!testResult.ok && (
+              <div className="pt-2 flex items-center justify-between">
+                <span className="text-xs text-rose-500 font-medium">{testResult.message}</span>
+                <button
+                  type="button"
+                  onClick={handleCopySql}
+                  className="flex items-center gap-1 text-xs font-bold text-emerald-400 hover:underline cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy SQL Script</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Configuration Setup & Sync Action Controls */}
         <div className="space-y-4 border-t border-slate-100 dark:border-slate-800/80 pt-4">
@@ -464,7 +551,7 @@ export function SettingsPage({
               </div>
               <button
                 onClick={() => setShowSqlModal(true)}
-                className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1"
+                className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1 cursor-pointer"
               >
                 <Code className="w-3 h-3" />
                 <span>Need Tables? Copy SQL Schema</span>
@@ -502,19 +589,36 @@ export function SettingsPage({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <button
-                onClick={handleSaveCredentials}
-                disabled={loading}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Save Credentials & Connect</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveCredentials}
+                  disabled={loading || testing}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {testing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4" />
+                  )}
+                  <span>Save & Connect</span>
+                </button>
+
+                {isConfigured && (
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Disconnect</span>
+                  </button>
+                )}
+              </div>
 
               <button
                 onClick={handleLoadDemoAndSync}
                 disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 text-xs font-bold transition-all disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
                 title="Populate vault with starter components and push them to Supabase"
               >
                 <PlusCircle className="w-3.5 h-3.5 text-indigo-400" />
@@ -527,31 +631,30 @@ export function SettingsPage({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
               <div className="flex flex-wrap items-center gap-2.5">
                 <button
+                  onClick={() => handleSyncFromSupabase(true)}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <CloudDownload className="w-4 h-4" />
+                  <span>Pull All Data from Supabase</span>
+                </button>
+
+                <button
                   onClick={handleSyncToSupabase}
                   disabled={loading}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <CloudUpload className="w-4 h-4" />
-                  <span>Push Local Data to Supabase Now</span>
+                  <span>Push Local Data to Supabase</span>
                 </button>
 
                 <button
                   onClick={() => handleSyncFromSupabase(false)}
                   disabled={loading}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs transition-all disabled:opacity-50"
+                  className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs transition-all disabled:opacity-50 cursor-pointer"
                 >
-                  <CloudDownload className="w-4 h-4 text-emerald-400" />
-                  <span>Delta Sync Pull</span>
-                </button>
-
-                <button
-                  onClick={() => handleSyncFromSupabase(true)}
-                  disabled={loading}
-                  className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 font-bold text-xs transition-all disabled:opacity-50"
-                  title="Ignore cache and force full download of all rows from Supabase"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Force Full Resync</span>
+                  <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Delta Pull</span>
                 </button>
               </div>
 
@@ -583,13 +686,19 @@ export function SettingsPage({
           <button
             onClick={handleExportBackup}
             disabled={loading}
-            className="flex items-center justify-center gap-2 p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 font-bold text-xs shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center justify-center gap-2 p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 font-bold text-xs shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             <Download className="w-4 h-4" />
-            <span>{loading && exportProgress ? exportProgress : 'Export Dexie DB & Blobs (JSON)'}</span>
+            <span>
+              {loading && exportProgress ? exportProgress : 'Export Dexie DB & Blobs (JSON)'}
+            </span>
           </button>
 
-          <label className={`flex items-center justify-center gap-2 p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 hover:border-slate-400 text-slate-800 dark:text-slate-200 font-bold text-xs cursor-pointer shadow-sm transition-all ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+          <label
+            className={`flex items-center justify-center gap-2 p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 hover:border-slate-400 text-slate-800 dark:text-slate-200 font-bold text-xs cursor-pointer shadow-sm transition-all ${
+              loading ? 'opacity-50 pointer-events-none' : ''
+            }`}
+          >
             <Upload className="w-4 h-4 text-cyan-500" />
             <span>Import Database File</span>
             <input
@@ -607,18 +716,18 @@ export function SettingsPage({
           <button
             onClick={handleLoadDemoData}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 text-xs font-bold transition-all"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer"
           >
             <Sparkles className="w-4 h-4 text-amber-500" />
-            <span>Load Demo Data</span>
+            <span>Load Demo Data Locally</span>
           </button>
 
           <button
             onClick={handleClearVault}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white text-xs font-bold border border-rose-500/30 transition-all"
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white text-xs font-bold border border-rose-500/30 transition-all cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
-            <span>Clear Vault Data</span>
+            <span>Clear Local Vault Data</span>
           </button>
         </div>
       </div>
@@ -627,7 +736,11 @@ export function SettingsPage({
       <div className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex items-center justify-between">
         <div>
           <h2 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-            {isDark ? <Moon className="w-5 h-5 text-amber-400" /> : <Sun className="w-5 h-5 text-amber-500" />}
+            {isDark ? (
+              <Moon className="w-5 h-5 text-amber-400" />
+            ) : (
+              <Sun className="w-5 h-5 text-amber-500" />
+            )}
             <span>Application Theme</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
@@ -637,7 +750,7 @@ export function SettingsPage({
 
         <button
           onClick={onToggleTheme}
-          className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 shadow-sm"
+          className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 shadow-sm cursor-pointer"
         >
           Switch to {isDark ? 'Light' : 'Dark'} Mode
         </button>
@@ -659,7 +772,7 @@ export function SettingsPage({
           </div>
 
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60">
-            <span className="text-slate-600 dark:text-slate-400 font-medium">Quick Add Resource</span>
+            <span className="text-slate-600 dark:text-slate-400 font-medium">Add Resource</span>
             <kbd className="font-mono text-[11px] bg-slate-200 dark:bg-slate-700 px-2 py-0.5 rounded text-slate-800 dark:text-slate-200">
               N
             </kbd>
@@ -694,7 +807,7 @@ export function SettingsPage({
               </div>
               <button
                 onClick={() => setShowSqlModal(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 ✕
               </button>
@@ -702,7 +815,9 @@ export function SettingsPage({
 
             <div className="p-5 overflow-y-auto font-mono text-xs text-slate-300 space-y-3 bg-slate-950/80">
               <p className="text-slate-400 font-sans text-xs">
-                Copy and run this script inside your <strong>Supabase SQL Editor</strong> (<em>https://supabase.com/dashboard/project/_/sql</em>) to provision all tables, indexes, and Row Level Security policies:
+                Copy and run this script inside your <strong>Supabase SQL Editor</strong> (
+                <em>https://supabase.com/dashboard/project/_/sql</em>) to provision all tables, indexes,
+                and Row Level Security policies:
               </p>
               <pre className="p-4 rounded-xl bg-slate-900 border border-slate-800 overflow-x-auto text-[11px] text-emerald-300/90 leading-relaxed">
                 {SUPABASE_SQL_SCRIPT}
@@ -716,7 +831,7 @@ export function SettingsPage({
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCopySql}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-md"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-md cursor-pointer"
                 >
                   {copiedSql ? (
                     <>
@@ -732,7 +847,7 @@ export function SettingsPage({
                 </button>
                 <button
                   onClick={() => setShowSqlModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all"
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer"
                 >
                   Close
                 </button>
