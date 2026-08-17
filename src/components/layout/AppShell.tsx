@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Sidebar, type NavPage } from './Sidebar';
 import { CommandPalette } from '../common/CommandPalette';
-import { AddResourceModal } from '../resources/AddResourceModal';
-import { QuickAddModal } from '../resources/QuickAddModal';
-import { Search, Plus, Menu, Command, Vault, Zap } from 'lucide-react';
+import { Search, Plus, Menu, Command, Vault } from 'lucide-react';
 import type { Category, Tag } from '../../types';
 
 interface AppShellProps {
@@ -40,7 +38,6 @@ export function AppShell({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   // Global Keyboard Shortcuts
   useEffect(() => {
@@ -62,10 +59,10 @@ export function AppShell({
 
       if (isInput) return;
 
-      // N -> New Quick Add
+      // N -> New Resource Modal
       if (e.key === 'n' || e.key === 'N') {
         e.preventDefault();
-        setQuickAddOpen(true);
+        onOpenAddModal();
         return;
       }
 
@@ -81,7 +78,7 @@ export function AppShell({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onOpenAddModal]);
 
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden font-sans antialiased">
@@ -93,7 +90,6 @@ export function AppShell({
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
           onOpenAddModal={onOpenAddModal}
-          onOpenQuickAdd={() => setQuickAddOpen(true)}
           onToggleTheme={onToggleTheme}
           isDark={isDark}
           totalCount={totalCount}
@@ -127,10 +123,6 @@ export function AppShell({
             onOpenAddModal();
             setMobileMenuOpen(false);
           }}
-          onOpenQuickAdd={() => {
-            setQuickAddOpen(true);
-            setMobileMenuOpen(false);
-          }}
           onToggleTheme={onToggleTheme}
           isDark={isDark}
           totalCount={totalCount}
@@ -145,7 +137,7 @@ export function AppShell({
           <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-white md:hidden"
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-white md:hidden cursor-pointer"
             >
               <Menu className="w-5 h-5" />
             </button>
@@ -168,7 +160,7 @@ export function AppShell({
               />
               <button
                 onClick={() => setCommandPaletteOpen(true)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-1 text-[10px] font-mono text-slate-400 bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-1 text-[10px] font-mono text-slate-400 bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors cursor-pointer"
                 title="Command Palette (Cmd+K)"
               >
                 <Command className="w-3 h-3" />
@@ -179,17 +171,8 @@ export function AppShell({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setQuickAddOpen(true)}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 font-bold text-xs border border-amber-500/30 transition-all"
-              title="Quick Add Resource (N)"
-            >
-              <Zap className="w-3.5 h-3.5 fill-current" />
-              <span>Quick Add</span>
-            </button>
-
-            <button
               onClick={onOpenAddModal}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition-all"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">Add Resource</span>
@@ -211,12 +194,6 @@ export function AppShell({
         onOpenAddModal={onOpenAddModal}
         onToggleTheme={onToggleTheme}
         isDark={isDark}
-      />
-
-      <QuickAddModal
-        isOpen={quickAddOpen}
-        onClose={() => setQuickAddOpen(false)}
-        onSaved={onRefreshData}
       />
     </div>
   );
